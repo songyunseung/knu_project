@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+accelerate
+sentencepiece
+safetensors
+requests
+six
+protobuf
