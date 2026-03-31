@@ -1,7 +1,16 @@
-# AI Server (Qwen3.5)
+# AI Server
 
 사용자 입력을 받아서  
-의도와 서비스 정보를 JSON 형태로 반환하는 AI 서버
+서비스 추천이나 사용자 유형을 JSON 형태로 반환하는 AI 서버
+
+---
+
+## 현재 방식
+
+현재는 OpenAI API를 사용해서 동작하도록 구현함
+
+처음에는 API 키가 없어서 원격 GPU 서버에서 로컬 모델(Qwen3.5-9B)로 테스트했지만,  
+이제는 OpenAI API 기반으로 전환한 상태
 
 ---
 
@@ -9,28 +18,47 @@
 
 1. 사용자가 키오스크에서 문장을 입력하거나 말함  
 2. backend가 해당 문장을 AI 서버로 전달  
-3. AI 서버가 Qwen3.5 모델로 문장을 분석  
+3. AI 서버가 OpenAI API로 문장을 분석  
 4. 분석 결과를 JSON 형태로 변환  
 5. backend가 JSON을 받아서 화면 이동 또는 기능 실행
 
 ---
 
-## 예시
+## ⚙️ 실행 방법
 
-입력:
-주민등록등본 발급하고 싶어요
+### 1. 패키지 설치
 
-출력:
-{
-  "intent": "issue_document",
-  "serviceId": "RESIDENT_REGISTRATION_COPY",
-  "confidence": 0.95
-}
+프로젝트 루트에서 필요한 패키지를 설치
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. OpenAI API 키 설정
+```bash
+$env:OPENAI_API_KEY="여기에_API키"
+```
+
+### 3. 서버 실행
+
+FastAPI 서버 실행
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
 ---
 
-## 특징
+## 주요 기능
 
-- 자연어를 그대로 쓰지 않고 JSON으로 변환해서 반환
-- backend에서 바로 처리 가능
-- 현재는 API 대신 로컬 모델(Qwen3.5)로 테스트 중
+### 1. 사용자 유형 분석
+
+- endpoint: `/classify/user-type`
+- 입력 문장을 바탕으로 사용자 유형 분류
+- 예: 시각 불편, 휠체어 사용 여부 등
+
+예시 입력:
+```json
+{
+  "text": "나 눈이 좀 안 좋아"
+}
+

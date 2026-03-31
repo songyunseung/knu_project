@@ -1,8 +1,6 @@
 fastapi
 uvicorn
-accelerate
-sentencepiece
-safetensors
+openai
 requests
 six
 protobuf
