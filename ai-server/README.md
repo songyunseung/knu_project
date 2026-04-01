@@ -1,64 +1,245 @@
-# AI Server
+# Kiosk AI Server (ai-server)
 
-사용자 입력을 받아서  
-서비스 추천이나 사용자 유형을 JSON 형태로 반환하는 AI 서버
-
----
-
-## 현재 방식
-
-현재는 OpenAI API를 사용해서 동작하도록 구현함
-
-처음에는 API 키가 없어서 원격 GPU 서버에서 로컬 모델(Qwen3.5-9B)로 테스트했지만,  
-이제는 OpenAI API 기반으로 전환한 상태
+관공서 키오스크를 위한 AI/LLM 서버입니다.
+사용자의 자연어 입력(음성/텍스트)을 분석하여 **사용자 유형 분류** 및 **민원 서비스 추천**을 수행합니다.
 
 ---
 
-## 작동 방식
+## 1. 개요 (Overview)
 
-1. 사용자가 키오스크에서 문장을 입력하거나 말함  
-2. backend가 해당 문장을 AI 서버로 전달  
-3. AI 서버가 OpenAI API로 문장을 분석  
-4. 분석 결과를 JSON 형태로 변환  
-5. backend가 JSON을 받아서 화면 이동 또는 기능 실행
+이 서버는 키오스크 시스템에서 다음 역할을 담당합니다:
+
+* 사용자 입력 분석 (텍스트 기반)
+* 사용자 유형 분류 (노약자, 휠체어 등)
+* 민원 서비스 추천
+* JSON 형태의 구조화된 응답 반환
 
 ---
 
-## ⚙️ 실행 방법
+## 2. 아키텍처 (Architecture)
 
-### 1. 패키지 설치
+```text
+[Frontend / Voice Input]
+        ↓
+    MCP Client
+        ↓
+     AI Server (this)
+        ↓
+   JSON Recommendation
+        ↓
+    MCP Client / Spring
+        ↓
+   UI 업데이트 (화면 이동, 접근성 적용)
+```
 
-프로젝트 루트에서 필요한 패키지를 설치
+---
+
+## 3. 프로젝트 구조 (Project Structure)
+
+```text
+ai-server/
+├─ app/
+│  ├─ main.py                  # FastAPI 진입점
+│  ├─ model.py                 # OpenAI 호출 및 JSON 파싱
+│  ├─ prompts.py               # LLM 프롬프트 정의
+│  ├─ schemas.py               # 요청/응답 스키마 (Pydantic)
+│  ├─ config.py                # 환경설정 (모델, threshold 등)
+│  ├─ exceptions.py            # 커스텀 예외
+│  └─ services/
+│     ├─ user_type.py          # 사용자 유형 분류 로직
+│     └─ service_recommend.py  # 서비스 추천 로직
+│
+├─ requirements.txt
+├─ run.sh
+└─ README.md
+```
+
+---
+
+## 4. 설치 및 실행 (Setup & Run)
+
+### 1) Python 환경
+
+```bash
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+```
+
+### 2) 패키지 설치
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. OpenAI API 키 설정
+### 3) 환경변수 설정
+
 ```bash
-$env:OPENAI_API_KEY="여기에_API키"
+export OPENAI_API_KEY=your_api_key
 ```
 
-### 3. 서버 실행
+선택 옵션:
 
-FastAPI 서버 실행
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+export OPENAI_MODEL=gpt-5-mini
+export OPENAI_TIMEOUT=20
+export OPENAI_MAX_OUTPUT_TOKENS=300
+export USER_TYPE_CONFIDENCE_THRESHOLD=0.60
+export SERVICE_CONFIDENCE_THRESHOLD=0.60
+```
+
+### 4) 서버 실행
+
+```bash
+uvicorn app.main:app --reload
+```
+
+또는
+
+```bash
+bash run.sh
 ```
 
 ---
 
-## 주요 기능
+## 5. API 명세 (API Endpoints)
 
-### 1. 사용자 유형 분석
+---
 
-- endpoint: `/classify/user-type`
-- 입력 문장을 바탕으로 사용자 유형 분류
-- 예: 시각 불편, 휠체어 사용 여부 등
+### 5.1 Health Check
 
-예시 입력:
+```http
+GET /health
+```
+
+응답:
+
 ```json
 {
-  "text": "나 눈이 좀 안 좋아"
+  "status": "ok",
+  "model": "gpt-5-mini"
 }
+```
+
+---
+
+### 5.2 사용자 유형 분류
+
+```http
+POST /classify/user-type
+```
+
+요청:
+
+```json
+{
+  "text": "글씨가 잘 안 보여요"
+}
+```
+
+응답:
+
+```json
+{
+  "task": "classify_user_type",
+  "success": true,
+  "fallback_used": false,
+  "userType": "VISUAL_IMPAIRMENT",
+  "confidence": 0.92,
+  "reason": "시력 불편을 직접 언급했다.",
+  "raw_text": "{...}",
+  "model_name": "gpt-5-mini"
+}
+```
+
+---
+
+### 5.3 서비스 추천
+
+```http
+POST /classify/service
+```
+
+요청:
+
+```json
+{
+  "text": "주민등록등본 발급하고 싶어요"
+}
+```
+
+응답:
+
+```json
+{
+  "task": "recommend_service",
+  "success": true,
+  "fallback_used": false,
+  "intent": "issue_document",
+  "serviceId": "RESIDENT_REGISTRATION_COPY",
+  "confidence": 0.95,
+  "answer": "주민등록등본 발급 메뉴로 안내할게요.",
+  "raw_text": "{...}",
+  "model_name": "gpt-5-mini"
+}
+```
+
+---
+
+## 6. 사용자 유형 (User Types)
+
+| 값                  | 설명      |
+| ------------------ | ------- |
+| ELDERLY            | 고령 사용자  |
+| WHEELCHAIR         | 휠체어 사용자 |
+| VISUAL_IMPAIRMENT  | 시각 장애   |
+| HEARING_IMPAIRMENT | 청각 장애   |
+| NORMAL             | 일반 사용자  |
+| UNKNOWN            | 불확실     |
+
+---
+
+## 7. 서비스 ID (Service IDs)
+
+| 값                          | 설명       |
+| -------------------------- | -------- |
+| RESIDENT_REGISTRATION_COPY | 주민등록등본   |
+| FAMILY_CERTIFICATE         | 가족관계증명서  |
+| MOVE_IN_REPORT             | 전입신고     |
+| HEALTH_INSURANCE           | 건강보험 관련  |
+| MARRIAGE_CERTIFICATE       | 혼인관계증명서  |
+| TAX_CERTIFICATE            | 세금 납부 확인 |
+| UNKNOWN                    | 불확실      |
+
+---
+
+## 8. Confidence 정책
+
+| 범위          | 처리 방식      |
+| ----------- | ---------- |
+| ≥ 0.85      | 바로 추천      |
+| 0.60 ~ 0.84 | 중간 신뢰도     |
+| < 0.60      | UNKNOWN 처리 |
+
+---
+
+## 9. 에러 및 fallback 처리
+
+다음 상황에서 fallback이 발생합니다:
+
+* OpenAI API 실패
+* JSON 파싱 실패
+* 잘못된 응답 형식
+* confidence threshold 미만
+
+fallback 예시:
+
+```json
+{
+  "success": false,
+  "fallback_used": true,
+  "userType": "UNKNOWN"
+}
+```
+
+---
 

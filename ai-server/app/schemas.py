@@ -1,5 +1,5 @@
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 UserType = Literal[
@@ -37,13 +37,23 @@ class HealthResponse(BaseModel):
 
 
 class BaseTextRequest(BaseModel):
-    text: str = Field(..., description="사용자 입력 문장")
+    text: str = Field(..., min_length=1, max_length=300, description="사용자 입력 문장")
     session_id: Optional[str] = Field(default=None, description="세션 ID")
     locale: str = Field(default="ko-KR", description="언어 코드")
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("text must not be empty.")
+        return v
 
 
 class UserTypeResponse(BaseModel):
     task: Literal["classify_user_type"]
+    success: bool
+    fallback_used: bool
     userType: UserType
     confidence: float
     reason: str
@@ -53,6 +63,8 @@ class UserTypeResponse(BaseModel):
 
 class ServiceRecommendResponse(BaseModel):
     task: Literal["recommend_service"]
+    success: bool
+    fallback_used: bool
     intent: IntentType
     serviceId: ServiceIdType
     confidence: float

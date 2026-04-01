@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from app.config import settings
 from app.model import model_instance
 from app.schemas import (
     BaseTextRequest,
@@ -10,8 +11,8 @@ from app.services.user_type import classify_user_type
 from app.services.service_recommend import recommend_service
 
 app = FastAPI(
-    title="Kiosk AI Server",
-    version="1.0.0",
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
     description="관공서 키오스크용 AI/LLM 서버",
 )
 
@@ -28,11 +29,9 @@ def health() -> HealthResponse:
 
 @app.post("/classify/user-type", response_model=UserTypeResponse)
 def classify_user_type_endpoint(req: BaseTextRequest) -> UserTypeResponse:
-    result = classify_user_type(req.text)
-    return UserTypeResponse(**result)
+    return UserTypeResponse(**classify_user_type(req.text))
 
 
 @app.post("/classify/service", response_model=ServiceRecommendResponse)
 def classify_service_endpoint(req: BaseTextRequest) -> ServiceRecommendResponse:
-    result = recommend_service(req.text)
-    return ServiceRecommendResponse(**result)
+    return ServiceRecommendResponse(**recommend_service(req.text))
