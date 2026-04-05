@@ -1,74 +1,24 @@
-# stomp_manager.py
 import asyncio
-import stomp
 import json
-import time
-import threading
 import logging
-from datetime import datetime
+import threading
+import time
+import uuid
 from collections import deque
+from datetime import datetime
+
+import websocket
 
 import config
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────────
-# STOMP 리스너 (재연결 + 수신 메시지 디스패치)
-# ─────────────────────────────────────────────────
-class _StompListener(stomp.ConnectionListener):
-
-    def __init__(self, controller: "UIController"):
-        self._ctrl = controller
-
-    def on_connected(self, frame):
-        logger.info("STOMP 서버 연결 성공: %s:%s", config.STOMP_HOST, config.STOMP_PORT)
-        self._ctrl._connected = True
-        # 연결(재연결) 시 구독 자동 복구
-        self._ctrl._subscribe_all()
-        self._ctrl._flush_pending_queue()
-
-    def on_disconnected(self):
-        logger.warning("STOMP 연결 끊김 — 자동 재연결 시도")
-        self._ctrl._connected = False
-        self._ctrl._schedule_reconnect()
-
-    def on_error(self, frame):
-        logger.error("STOMP 에러 프레임: %s", frame.body)
-
-    def on_message(self, frame):
-        """
-        프론트로부터 수신한 메시지를 파싱하여 등록된 핸들러로 전달.
-        ⚠️ 이 메서드는 STOMP 리스너 스레드에서 실행된다.
-           → _dispatch_message 내부에서 call_soon_threadsafe를 통해
-             asyncio 루프로 안전하게 위임한다.
-        """
-        dest = frame.headers.get("destination", "")
-        try:
-            payload = json.loads(frame.body)
-        except json.JSONDecodeError:
-            logger.warning("수신 메시지 JSON 파싱 실패: %s", frame.body[:200])
-            return
-
-        logger.info("수신 ← [%s] action=%s", dest, payload.get("action"))
-        self._ctrl._dispatch_message(dest, payload)
-
-
-# ─────────────────────────────────────────────────
-# UIController
-# ─────────────────────────────────────────────────
 class UIController:
     """
-    STOMP 기반 프론트엔드 양방향 통신 컨트롤러.
-
-    ★ 스레드 안전성 설계:
-       stomp.py 라이브러리는 자체 리스너 스레드에서 on_message를 호출한다.
-       그런데 main.py의 핸들러들은 asyncio 루프에 의존하는 코드
-       (loop.call_later, create_task 등)를 사용한다.
-
-       → 해결: connect() 시 asyncio 루프를 주입받고,
-         _dispatch_message에서 call_soon_threadsafe로
-         모든 핸들러 실행을 asyncio 루프 스레드에 위임한다.
+    Spring WebSocket + STOMP 클라이언트
+    - ws://localhost:8080/ws 로 접속
+    - CONNECT / SUBSCRIBE / SEND 프레임 직접 처리
     """
 
     def __init__(self):
@@ -76,36 +26,50 @@ class UIController:
         self._reconnecting = False
         self._pending_queue: deque = deque(maxlen=100)
         self._loop: asyncio.AbstractEventLoop | None = None
-
-        # 이벤트 핸들러 레지스트리: { action_name: callback(payload) }
         self._handlers: dict[str, callable] = {}
 
-        # STOMP 연결 객체 생성만 (실제 연결은 connect()에서)
-        self.conn = stomp.Connection(
-            [(config.STOMP_HOST, config.STOMP_PORT)],
-            heartbeats=(10000, 10000)
-        )
-        self.conn.set_listener("main", _StompListener(self))
+        self.ws: websocket.WebSocket | None = None
+        self._receiver_thread: threading.Thread | None = None
+        self._session_id = str(uuid.uuid4())
 
-    # ── 연결 / 재연결 ──────────────────────────
+    # ── 연결 ────────────────────────────────────
     def connect(self, loop: asyncio.AbstractEventLoop):
-        """
-        STOMP 연결을 시작한다.
-
-        Parameters
-        ----------
-        loop : asyncio.AbstractEventLoop
-            ★ asyncio 이벤트 루프를 주입받아,
-              STOMP 스레드에서 핸들러를 안전하게 스케줄링한다.
-        """
         self._loop = loop
         self._do_connect()
 
     def _do_connect(self):
         try:
-            self.conn.connect(wait=True)
+            logger.info("WebSocket 연결 시도: %s", config.WS_URL)
+            self.ws = websocket.WebSocket()
+            self.ws.connect(config.WS_URL)
+
+            self._send_frame(
+                "CONNECT",
+                {
+                    "accept-version": "1.2",
+                    "host": "localhost",
+                    "heart-beat": "10000,10000",
+                },
+            )
+
+            frame = self._recv_frame_blocking()
+            if not frame.startswith("CONNECTED"):
+                raise ConnectionError(f"STOMP CONNECT 실패: {frame[:200]}")
+
+            self._connected = True
+            logger.info("WebSocket/STOMP 연결 성공")
+
+            self._subscribe_all()
+            self._flush_pending_queue()
+
+            self._receiver_thread = threading.Thread(
+                target=self._receive_loop,
+                daemon=True,
+            )
+            self._receiver_thread.start()
+
         except Exception as e:
-            logger.error("STOMP 연결 실패: %s", e)
+            logger.error("WebSocket/STOMP 연결 실패: %s", e)
             self._connected = False
             self._schedule_reconnect()
 
@@ -115,72 +79,138 @@ class UIController:
         self._reconnecting = True
 
         def _loop():
-            delay = config.STOMP_RECONNECT_DELAY
-            for attempt in range(1, config.STOMP_MAX_RECONNECT_TRIES + 1):
+            delay = config.WS_RECONNECT_DELAY
+            for attempt in range(1, config.WS_MAX_RECONNECT_TRIES + 1):
                 if self._connected:
                     break
-                logger.info("STOMP 재연결 시도 %d/%d (%ds 후)",
-                            attempt, config.STOMP_MAX_RECONNECT_TRIES, delay)
+
+                logger.info(
+                    "WebSocket 재연결 시도 %d/%d (%ds 후)",
+                    attempt,
+                    config.WS_MAX_RECONNECT_TRIES,
+                    delay,
+                )
                 time.sleep(delay)
+
                 try:
-                    self.conn.connect(wait=True)
-                    break
+                    self._close_socket()
+                    self._do_connect()
+                    if self._connected:
+                        break
                 except Exception as e:
-                    logger.warning("  재연결 실패: %s", e)
+                    logger.warning("재연결 실패: %s", e)
                     delay = min(delay * 2, 30)
             else:
-                logger.critical("STOMP 재연결 최대 시도 초과 — 수동 점검 필요")
+                logger.critical("WebSocket 재연결 최대 시도 초과 — 수동 점검 필요")
+
             self._reconnecting = False
 
         threading.Thread(target=_loop, daemon=True).start()
 
+    # ── STOMP 프레임 처리 ───────────────────────
+    def _send_frame(self, command: str, headers: dict | None = None, body: str = ""):
+        headers = headers or {}
+        frame = command + "\n"
+        for k, v in headers.items():
+            frame += f"{k}:{v}\n"
+        frame += "\n"
+        frame += body
+        frame += "\x00"
+        self.ws.send(frame)
+
+    def _recv_frame_blocking(self) -> str:
+        chunks = []
+        while True:
+            data = self.ws.recv()
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", errors="ignore")
+            chunks.append(data)
+            joined = "".join(chunks)
+            if "\x00" in joined:
+                return joined.split("\x00", 1)[0]
+
+    def _parse_frame(self, raw_frame: str):
+        raw_frame = raw_frame.replace("\r\n", "\n")
+        parts = raw_frame.split("\n\n", 1)
+        header_part = parts[0]
+        body = parts[1] if len(parts) > 1 else ""
+
+        lines = header_part.split("\n")
+        command = lines[0].strip()
+        headers = {}
+
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip()] = v.strip()
+
+        return command, headers, body
+
+    # ── 수신 루프 ───────────────────────────────
+    def _receive_loop(self):
+        try:
+            while self.ws:
+                raw = self._recv_frame_blocking()
+                command, headers, body = self._parse_frame(raw)
+
+                if command == "MESSAGE":
+                    dest = headers.get("destination", "")
+                    try:
+                        payload = json.loads(body)
+                    except json.JSONDecodeError:
+                        logger.warning("수신 메시지 JSON 파싱 실패: %s", body[:200])
+                        continue
+
+                    logger.info("수신 ← [%s] action=%s", dest, payload.get("action"))
+                    self._dispatch_message(dest, payload)
+
+                elif command == "ERROR":
+                    logger.error("STOMP ERROR: %s", body)
+
+                elif command == "\n":
+                    # heartbeat
+                    pass
+
+        except Exception as e:
+            if self._connected:
+                logger.warning("WebSocket 연결 끊김 — 자동 재연결 시도: %s", e)
+            self._connected = False
+            self._schedule_reconnect()
+
     # ── 구독 ────────────────────────────────────
     def _subscribe_all(self):
-        """연결/재연결 시 필요한 토픽을 모두 구독"""
         subs = [
             (config.STOMP_SUB_FRONT_EVENTS, "sub-events"),
-            (config.STOMP_SUB_FRONT_ACK,    "sub-ack"),
+            (config.STOMP_SUB_FRONT_ACK, "sub-ack"),
         ]
         for dest, sub_id in subs:
             try:
-                self.conn.subscribe(destination=dest, id=sub_id, ack="auto")
+                self._send_frame(
+                    "SUBSCRIBE",
+                    {
+                        "id": sub_id,
+                        "destination": dest,
+                        "ack": "auto",
+                    },
+                )
                 logger.info("구독 등록: %s", dest)
             except Exception as e:
                 logger.error("구독 실패 [%s]: %s", dest, e)
 
-    # ══════════════════════════════════════════════
-    #  ★ 핵심 수정: 스레드-안전 메시지 디스패치
-    # ══════════════════════════════════════════════
+    # ── 핸들러 ──────────────────────────────────
     def register_handler(self, action: str, callback):
-        """
-        특정 action에 대한 핸들러를 등록한다.
-        callback(payload: dict) — 동기 함수 또는 코루틴 함수 모두 지원.
-        """
         self._handlers[action] = callback
         logger.info("핸들러 등록: action='%s'", action)
 
     def _dispatch_message(self, destination: str, payload: dict):
-        """
-        ★ STOMP 리스너 스레드에서 호출된다.
-
-        동작 방식:
-        1. asyncio 루프가 설정되어 있으면
-           → call_soon_threadsafe 로 asyncio 루프 스레드에 핸들러 실행을 위임
-        2. 코루틴 핸들러는 create_task 로 감싸서 스케줄링
-        3. 동기 핸들러도 asyncio 루프 스레드에서 실행
-           (loop.call_later 등 루프 의존 코드가 안전하게 동작)
-        """
         action = payload.get("action")
         handler = self._handlers.get(action)
         if not handler:
             logger.debug("미등록 action 수신 무시: %s", action)
             return
 
-        # asyncio 루프가 없거나 닫혀 있으면 폴백: 현재 스레드에서 직접 실행
         if self._loop is None or self._loop.is_closed():
-            logger.warning(
-                "asyncio 루프 미설정 — 현재 스레드에서 핸들러 직접 실행: %s", action
-            )
+            logger.warning("asyncio 루프 미설정 — 현재 스레드에서 직접 실행: %s", action)
             try:
                 handler(payload)
             except Exception as e:
@@ -188,63 +218,70 @@ class UIController:
             return
 
         if asyncio.iscoroutinefunction(handler):
-            # ★ 코루틴 핸들러 → asyncio 루프에 태스크로 스케줄링
             def _schedule_coro():
-                self._loop.create_task(
-                    self._safe_async_handler(action, handler, payload)
-                )
-
+                self._loop.create_task(self._safe_async_handler(action, handler, payload))
             self._loop.call_soon_threadsafe(_schedule_coro)
         else:
-            # ★ 동기 핸들러 → asyncio 루프 스레드에서 실행
             def _run_sync():
                 try:
                     handler(payload)
                 except Exception as e:
                     logger.error("핸들러 오류 [%s]: %s", action, e)
-
             self._loop.call_soon_threadsafe(_run_sync)
 
     @staticmethod
     async def _safe_async_handler(action: str, handler, payload: dict):
-        """코루틴 핸들러를 예외 안전하게 실행하는 래퍼"""
         try:
             await handler(payload)
         except Exception as e:
             logger.error("비동기 핸들러 오류 [%s]: %s", action, e)
 
-    # ── 대기 큐 플러시 ──────────────────────────
+    # ── 송신 ────────────────────────────────────
     def _flush_pending_queue(self):
         sent = 0
         while self._pending_queue:
             dest, body = self._pending_queue.popleft()
             try:
-                self.conn.send(body=body, destination=dest)
+                self._send_frame(
+                    "SEND",
+                    {
+                        "destination": dest,
+                        "content-type": "application/json",
+                    },
+                    body,
+                )
                 sent += 1
             except Exception as e:
                 self._pending_queue.appendleft((dest, body))
                 logger.warning("큐 플러시 중 전송 실패: %s", e)
                 break
+
         if sent:
             logger.info("대기 큐 메시지 %d건 전송 완료", sent)
 
-    # ── 송신 ────────────────────────────────────
     def send_command(self, session_id, action, payload=None) -> bool:
         message = {
             "action": action,
             "timestamp": datetime.now().isoformat(),
-            "data": payload or {}
+            "data": payload or {},
         }
         dest = f"/topic/ui/{session_id}" if session_id else "/topic/ui/global"
-        body = json.dumps(message)
+        body = json.dumps(message, ensure_ascii=False)
 
         if not self._connected:
-            logger.warning("STOMP 미연결 — 대기 큐 보관: %s", action)
+            logger.warning("WebSocket 미연결 — 대기 큐 보관: %s", action)
             self._pending_queue.append((dest, body))
             return False
 
         try:
-            self.conn.send(body=body, destination=dest)
+            self._send_frame(
+                "SEND",
+                {
+                    "destination": dest,
+                    "content-type": "application/json",
+                },
+                body,
+            )
             return True
         except Exception as e:
             logger.error("메시지 전송 오류: %s — 대기 큐 보관", e)
@@ -253,7 +290,6 @@ class UIController:
             self._schedule_reconnect()
             return False
 
-    # ── 모드 변경 (공식 진입점) ──────────────────
     def adapt_mode(self, user_type) -> bool:
         settings = config.USER_CONFIGS.get(user_type, config.USER_CONFIGS["NORMAL"])
         success = self.send_command(None, "ADAPT_UI", {
@@ -264,10 +300,21 @@ class UIController:
         return success
 
     # ── 종료 ────────────────────────────────────
-    def disconnect(self):
+    def _close_socket(self):
         try:
-            self.conn.disconnect()
+            if self.ws:
+                try:
+                    self._send_frame("DISCONNECT")
+                except Exception:
+                    pass
+                self.ws.close()
         except Exception:
             pass
+        finally:
+            self.ws = None
+
+    def disconnect(self):
+        self._connected = False
+        self._close_socket()
         self._loop = None
-        logger.info("STOMP 연결 종료")
+        logger.info("WebSocket/STOMP 연결 종료")

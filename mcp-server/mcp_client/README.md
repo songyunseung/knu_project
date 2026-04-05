@@ -2,13 +2,45 @@
 
 > 베리어프리 키오스크 프로젝트 — MCP 서버와의 실시간 통신 및 프론트엔드 UI 제어를 담당하는 클라이언트 모듈입니다.
 
+
+최근 변경사항
+1. raw STOMP 브로커 방식 → Spring WebSocket 방식으로 전환
+
+기존에는 외부 STOMP 브로커 포트(61613)에 직접 접속하는 구조를 전제로 했습니다.
+현재는 Spring Boot의 WebSocket endpoint로 직접 연결한 뒤, 그 위에서 STOMP 프레임을 주고받는 구조로 변경했습니다.
+
+변경 전
+-stomp.py 기반 raw STOMP TCP 연결
+-외부 브로커 필요
+-localhost:61613 접속
+변경 후
+-websocket-client 기반 WebSocket 연결
+-Spring endpoint 접속: ws://localhost:8080/ws
+-WebSocket 연결 후 STOMP CONNECT / SUBSCRIBE / SEND 수행
+2. Spring WebSocket endpoint 기준으로 프론트/클라이언트 구조 정렬
+
+Spring 백엔드 설정 기준:
+
+-endpoint: /ws
+-broker prefix: /topic
+-application prefix: /app
+
+따라서 Python 클라이언트는 다음과 같이 동작합니다.
+
+1.ws://localhost:8080/ws 연결
+2.STOMP CONNECT 프레임 전송
+3./topic/front/events, /topic/front/ack 구독
+4./topic/ui/global, /topic/ui/{sessionId}로 메시지 송신
+
+
+
 ---
 
 ## 📁 프로젝트 구조
 
 ```
 ├── main.py               # 키오스크 메인 컨트롤러 (전체 흐름 조율)
-├── stomp_manager.py       # STOMP 기반 프론트엔드 양방향 통신
+├── stomp_manager.py       # Spring WebSocket/STOMP 기반 프론트엔드 양방향 통신
 ├── mcp_client.py          # MCP 서버 연결 및 도구 호출 클라이언트
 ├── session_manager.py     # 세션 생명주기 관리
 ├── intent_analyzer.py     # AI 응답 파싱 및 의도 분석
@@ -33,7 +65,7 @@
 
 STOMP 프로토콜 기반으로 프론트엔드와 양방향 통신합니다.
 
-- 연결/재연결 (지수 백오프 + 최대 재시도 제한)
+- WebSocket 연결/재연결 (지수 백오프 + 최대 재시도 제한)
 - 대기 큐: 연결 끊김 시 메시지 보관, 재연결 후 자동 플러시
 - 이벤트 핸들러 레지스트리: action 기반 메시지 디스패치
 - **스레드 안전 브릿지**: STOMP 리스너 스레드 → asyncio 루프
@@ -194,6 +226,28 @@ WAITING ──→ ACTIVE ──→ COMPLETED (정상 종료)
 
 - `TIMEOUT` / `ERROR` 시 백엔드 롤백이나 리소스 정리가 필요한지 논의 필요
 
+Spring 설정 기준 확인 필요 사항:
+
+-endpoint: /ws
+-broker prefix: /topic
+-application prefix: /app
+
+Python 클라이언트는 위 경로에 맞춰 동작하므로, Spring 측 destination 설계가 아래와 일치해야 합니다.
+
+프론트/클라이언트 → 서버 구독 대상
+-/topic/front/events
+-/topic/front/ack
+서버/클라이언트 → 프론트 송신 대상
+-/topic/ui/global
+-/topic/ui/{sessionId}
+
+또한 Python 일반 WebSocket 클라이언트와의 호환을 위해 순수 WebSocket endpoint와 SockJS endpoint를 분리하는 구성을 권장합니다.
+
+예:
+
+/ws : Python용 순수 WebSocket
+/ws-sockjs : 브라우저용 SockJS
+
 ---
 
 ### 5번 팀 — Front-end & HCI
@@ -224,21 +278,6 @@ WAITING ──→ ACTIVE ──→ COMPLETED (정상 종료)
 | `IDLE_WARNING` | 유휴 경고 팝업 표시 | `/topic/ui/global` |
 | `SESSION_EXPIRED` | 세션 만료 알림 | `/topic/ui/{sessionId}` |
 
-
-action 조건문 참조예시
-
-onConnect: () => {
-  client.subscribe('/topic/ui/global', (message) => {
-    const data = JSON.parse(message.body);
-    // action이 'ADAPT_UI'일 때만 세팅 변경
-    if (data.action === 'ADAPT_UI') {
-      setAccessibility(data.data.settings);
-    } else if (data.action === 'GO_HOME') {
-      // 홈으로 이동하는 로직 등 추가 가능
-    }
-  });
-}
-
 **주의사항:**
 
 - `UIController`가 생성 시 즉시 연결하지 않고 `connect()` 호출 시점에 연결하도록 변경됨
@@ -249,21 +288,21 @@ onConnect: () => {
 
 ## 🛠️ 설정값 참조 (`config.py`)
 
-| 설정 | 값 | 설명 |
-|------|---|------|
-| `STOMP_HOST` | `localhost` | STOMP 브로커 주소 |
-| `STOMP_PORT` | `61613` | STOMP 브로커 포트 |
-| `STOMP_RECONNECT_DELAY` | `3` | 재연결 초기 대기(초) |
-| `STOMP_MAX_RECONNECT_TRIES` | `10` | 최대 재연결 시도 |
-| `SESSION_TIMEOUT_SEC` | `300` | 세션 최대 유지 시간 (5분) |
-| `SESSION_CLEANUP_INTERVAL` | `30` | 만료 세션 정리 주기 (초) |
-| `IDLE_TIMEOUT_SEC` | `60` | 무입력 시 홈 복귀까지 (초) |
-| `IDLE_WARNING_SEC` | `45` | 복귀 전 경고 표시 시점 (초) |
+| 설정 | 설명 |
+WS_URL	|   Spring WebSocket endpoint URL (ws://localhost:8080/ws)
+WS_RECONNECT_DELAY	|   재연결 초기 대기(초)
+WS_MAX_RECONNECT_TRIES	|   최대 재연결 시도 횟수
+STOMP_SUB_FRONT_EVENTS	|   프론트 이벤트 구독 경로
+STOMP_SUB_FRONT_ACK	|   프론트 ACK 구독 경로
+SESSION_TIMEOUT_SEC	|   세션 최대 유휴 시간
+SESSION_CLEANUP_INTERVAL	|       만료 세션 정리 주기
+IDLE_TIMEOUT_SEC	|   무입력 시 홈 복귀까지
+IDLE_WARNING_SEC	|   복귀 전 경고 표시 시점
 
 ---
 
 ## 🚀 실행 방법
-
+스프링 서버 실행 후 main.py실행
 ```bash
 python main.py
 ```
@@ -274,9 +313,9 @@ python main.py
 
 ## 📋 의존성
 
-- `stomp.py` — STOMP 프로토콜 클라이언트
-- `mcp` — MCP(Model Context Protocol) SDK
+- websocket-client — WebSocket 클라이언트
+- mcp — MCP SD
 
 ```bash
-pip install stomp.py mcp
+pip install websocket-client mcp
 ```

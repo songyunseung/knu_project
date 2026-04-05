@@ -280,16 +280,8 @@ async def main():
     await controller.start()
 
     try:
-        # 예시 1: 휠체어 모드 버튼 클릭
-        await controller.handle_request("CHANGE_MODE", "WHEELCHAIR")
-
-        # 예시 2: 전입신고 터치
-        await controller.handle_request("TOUCH_SERVICE", config.SERVICE_ID_REGISTRATION)
-
-        # 실제 운영에서는 여기서 이벤트 루프가 계속 돌며
-        # STOMP 수신 → 핸들러 → 유휴 타이머가 자동 동작한다.
-        # await asyncio.Event().wait()  # ← 운영 시 활성화
-
+        # 운영 시 계속 대기
+        await asyncio.Event().wait()
     finally:
         await controller.shutdown()
 
