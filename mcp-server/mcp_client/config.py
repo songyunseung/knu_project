@@ -4,7 +4,8 @@
 # STOMP 메시지 브로커 설정
 # ──────────────────────────────────────────────
 STOMP_HOST = "localhost"
-STOMP_PORT = 61613
+# 61613에서 8080으로 수정
+STOMP_PORT = 8080
 STOMP_RECONNECT_DELAY = 3
 STOMP_MAX_RECONNECT_TRIES = 10
 
