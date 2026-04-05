@@ -224,6 +224,21 @@ WAITING ──→ ACTIVE ──→ COMPLETED (정상 종료)
 | `IDLE_WARNING` | 유휴 경고 팝업 표시 | `/topic/ui/global` |
 | `SESSION_EXPIRED` | 세션 만료 알림 | `/topic/ui/{sessionId}` |
 
+
+action 조건문 참조예시
+
+onConnect: () => {
+  client.subscribe('/topic/ui/global', (message) => {
+    const data = JSON.parse(message.body);
+    // action이 'ADAPT_UI'일 때만 세팅 변경
+    if (data.action === 'ADAPT_UI') {
+      setAccessibility(data.data.settings);
+    } else if (data.action === 'GO_HOME') {
+      // 홈으로 이동하는 로직 등 추가 가능
+    }
+  });
+}
+
 **주의사항:**
 
 - `UIController`가 생성 시 즉시 연결하지 않고 `connect()` 호출 시점에 연결하도록 변경됨
