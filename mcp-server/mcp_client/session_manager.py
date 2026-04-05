@@ -136,7 +136,7 @@ class SessionManager:
             expired_ids = [
                 sid for sid, s in self._sessions.items()
                 if s.state in (SessionState.WAITING, SessionState.ACTIVE)
-                and (now - s.created_at) > config.SESSION_TIMEOUT_SEC
+                and (now - s.last_activity) > config.SESSION_TIMEOUT_SEC
             ]
             for sid in expired_ids:
                 session = self._sessions[sid]

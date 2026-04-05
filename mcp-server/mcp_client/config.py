@@ -1,13 +1,14 @@
 # config.py
 
-# ──────────────────────────────────────────────
-# STOMP 메시지 브로커 설정
-# ──────────────────────────────────────────────
-STOMP_HOST = "localhost"
-# 61613에서 8080으로 수정
-STOMP_PORT = 8080
-STOMP_RECONNECT_DELAY = 3
-STOMP_MAX_RECONNECT_TRIES = 10
+
+# WebSocket/STOMP 설정
+WS_URL = "ws://localhost:8080/ws"
+WS_RECONNECT_DELAY = 3
+WS_MAX_RECONNECT_TRIES = 10
+
+# 구독 경로
+STOMP_SUB_FRONT_EVENTS = "/topic/front/events"
+STOMP_SUB_FRONT_ACK = "/topic/front/ack"
 
 # STOMP 구독 경로 (프론트 → 백엔드)
 STOMP_SUB_FRONT_EVENTS = "/topic/front/events"
