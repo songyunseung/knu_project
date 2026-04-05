@@ -1,0 +1,33 @@
+# Docker Container 관리
+# 서비스 시작: docker-compose up -d (백그라운드에서 DB 실행)
+
+# 상태 확인: docker-compose ps (DB가 잘 돌아가고 있는지 확인)
+
+# 서비스 중지: docker-compose down (리소스 절약을 위해 종료)
+
+services:
+  kiosk-db:
+    image: postgres:17
+    container_name: local-kiosk-db
+    restart: always
+    environment:
+      POSTGRES_USER: kiosk_user
+      POSTGRES_PASSWORD: kiosk1234
+      POSTGRES_DB: kioskdb
+    ports:
+      - "5432:5432"
+    volumes:
+      # 내 컴퓨터의 'pgdata' 폴더에 데이터 저장 (DB를 꺼도 유지됨)
+      - ./pgdata:/var/lib/postgresql/data
+
+  # 옵션: DB 내부를 눈으로 확인하고 싶을 때 (웹 브라우저로 접속 가능)
+  pgAdmin:
+    image: dpage/pgadmin4
+    container_name: local-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "8081:80"
+    depends_on:
+      - kiosk-db
