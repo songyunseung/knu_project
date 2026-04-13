@@ -1,0 +1,22 @@
+/* 낮은 화면 모드: 화면 배치/간격 전담 */
+.screen-frame.low-screen {
+  --screen-justify: flex-end;
+  --space-screen-padding: 36px;
+  --space-section-gap: 34px;
+  --space-row-gap: 16px;
+  --space-content-left: 24px;
+  --space-progress-bottom: 90px;
+  --space-title-bottom: 48px;
+
+  --service-button-height: 104px;
+  --large-choice-height: 220px;
+  --step-size: 170px;
+}
+
+.screen-frame.low-screen .hero-title-box {
+  margin-bottom: 34px;
+}
+
+.screen-frame.low-screen .large-choice-list {
+  gap: 48px;
+}
